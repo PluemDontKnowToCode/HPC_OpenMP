@@ -1,5 +1,5 @@
 CC=gcc # compiler
-TARGET=main # target file name
+TARGET=main.exe # target file name
 
 CFLAGS = -Wall -fopenmp # set the flags (options) to be used with the default compiler
 all:	main.o MatMul_omp.o
