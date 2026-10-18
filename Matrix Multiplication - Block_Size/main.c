@@ -9,22 +9,18 @@
 // Task is to write a routine which computes a NEW matrix C such that:
 // C = alpha x A x B + beta x C
 
-// This main function measures the execution time (omp_get_wtime) of MatMul
-// with 1,2,3,4 threads and with workload = 1x, 2x, 4x, repeating each
-// setting NRUNS times, then prints the average-time table and the speedup table.
+// This main function studies the effect of the BLOCK size b on MatMul.
+// Fixed matrix size N x N (default N = 1600), block sizes b = 4, 8, 16, 32
+// (doubling), thread counts 1 and 4. Each setting is repeated NRUNS times,
+// timed with omp_get_wtime(), and the average time + speedup are printed.
 //
-// Workload: matrix multiplication costs O(N^3), so workload kx uses
-// N_k = N_1x * cbrt(k) (rounded to a multiple of the block size b).
-// N_1x is chosen so that 1 thread takes about 20 s at 1x on the test machine.
-//
-// Usage: ./main [N_1x] [runs]      (defaults: N_1x = 1600, runs = 10)
-//   e.g. quick test: ./main 160 2
+// Usage: ./main.exe [N] [runs]      (defaults: N = 1600, runs = 10)
+//   N must be a multiple of 32 (the largest block), e.g. quick test: ./main.exe 160 2
 
-#define NTHREADS_MAX 4
-#define NWORK        3
-#define BLOCK        16            /* block size b (same as original, numt < 4) */
-#define N1X_DEFAULT  1600
+#define N_DEFAULT     1600
 #define NRUNS_DEFAULT 10
+#define NBLOCKS       4
+#define NTHR          2
 
 //MatMul( m, n, p, b, alpha, beta, A, B, C ) is the function that solves computes the matrix C.
 
@@ -35,57 +31,59 @@ int main( int argc, char **argv )
     int row, col, numt ;
     char status[100] ;
 
-    int N1x   = ( argc > 1 ) ? atoi( argv[1] ) : N1X_DEFAULT ;
-    int nruns = ( argc > 2 ) ? atoi( argv[2] ) : NRUNS_DEFAULT ;
-    int mult[NWORK] = { 1, 2, 4 } ;          /* workload factors */
-    int dim[NWORK] ;
-    double cbrt_k[NWORK] = { 1.0, 1.259921049894873, 1.587401051968199 } ; /* cbrt(1,2,4) */
-    int w, run, failed = 0 ;
-    double tsum[NWORK][NTHREADS_MAX+1] = {{0}} ;
+    const int blocks[NBLOCKS] = { 4, 8, 16, 32 } ;   /* BLOCK sizes: 4 .. 32, step x2 */
+    const int threads[NTHR]   = { 1, 4 } ;           /* thread counts */
 
-    if ( N1x < BLOCK || nruns < 1 ) { printf( "usage: %s [N_1x>=16] [runs>=1]\n", argv[0] ) ; return 1 ; }
-    for( w = 0 ; w < NWORK ; w++ )
-        dim[w] = (int)( N1x * cbrt_k[w] / BLOCK + 0.5 ) * BLOCK ;
-    int MAXN = dim[NWORK-1] ;                /* largest matrix size (4x) */
+    int N     = ( argc > 1 ) ? atoi( argv[1] ) : N_DEFAULT ;
+    int nruns = ( argc > 2 ) ? atoi( argv[2] ) : NRUNS_DEFAULT ;
+    int bi, ti, run, failed = 0 ;
+    double tsum[NBLOCKS][NTHR] = {{0}} ;
+
+    if ( N < 32 || ( N % 32 ) != 0 || nruns < 1 )
+    {
+        printf( "usage: %s [N: multiple of 32] [runs>=1]\n", argv[0] ) ;
+        return 1 ;
+    }
 
     alpha = (double) 1.3 ;
     beta  = (double) 2.9 ;
 
-    A = (double *) malloc( sizeof(double) * MAXN * MAXN ) ;
-    B = (double *) malloc( sizeof(double) * MAXN * MAXN ) ;
-    C = (double *) malloc( sizeof(double) * MAXN * MAXN ) ;
-    Corg = (double *) malloc( sizeof(double) * MAXN * MAXN ) ;
+    A = (double *) malloc( sizeof(double) * N * N ) ;
+    B = (double *) malloc( sizeof(double) * N * N ) ;
+    C = (double *) malloc( sizeof(double) * N * N ) ;
+    Corg = (double *) malloc( sizeof(double) * N * N ) ;
     if ( ( A == NULL ) || ( B == NULL ) || ( C == NULL ) || ( Corg == NULL ) )
     {
         printf( "Out of Memory\n" ) ;
         exit(1) ;
     }
 
-    for( row = 0 ; row < MAXN ; row++ )
-        for( col = 0 ; col < MAXN ; col++ )
-            A[row*MAXN+col] = rand() ;
+    for( row = 0 ; row < N ; row++ )
+        for( col = 0 ; col < N ; col++ )
+            A[row*N+col] = rand() ;
 
-    for( row = 0 ; row < MAXN ; row++ )
-        for( col = 0 ; col < MAXN ; col++ )
-            B[row*MAXN+col] = rand() ;
+    for( row = 0 ; row < N ; row++ )
+        for( col = 0 ; col < N ; col++ )
+            B[row*N+col] = rand() ;
 
-    for( row = 0 ; row < MAXN ; row++ )
-        for( col = 0 ; col < MAXN ; col++ )
-            Corg[row*MAXN+col] = rand() ;
+    for( row = 0 ; row < N ; row++ )
+        for( col = 0 ; col < N ; col++ )
+            Corg[row*N+col] = rand() ;
 
-    printf( "Workload N: 1x=%d  2x=%d  4x=%d   block=%d   runs=%d\n", dim[0], dim[1], dim[2], BLOCK, nruns ) ;
+    m = n = p = N ;
+    printf( "N=%d   blocks=4,8,16,32   threads=1,4   runs=%d\n", N, nruns ) ;
 
-    for( w = 0 ; w < NWORK ; w++ )
+    for( bi = 0 ; bi < NBLOCKS ; bi++ )
     {
-        m = n = p = dim[w] ;
-        for( numt = 1 ; numt <= NTHREADS_MAX ; numt++ )
+        for( ti = 0 ; ti < NTHR ; ti++ )
         {
+            numt = threads[ti] ;
             for( run = 1 ; run <= nruns ; run++ )
             {
                 for( row = 0 ; row < m ; row++ )
                     for( col = 0 ; col < p ; col++ )
                         C[row*p+col] = Corg[row*p+col] ;
-                b = BLOCK ;
+                b = blocks[bi] ;
                 if ( b > m ) b = m ;
                 if ( b > n ) b = n ;
                 if ( b > p ) b = p ;
@@ -129,9 +127,9 @@ int main( int argc, char **argv )
                 else
                     strcpy( status, "\x1b[32mPassed\x1b[0m" ) ;
 
-                tsum[w][numt] += time2 - time1 ;
-                printf( "{workload=%dx,m=%d,n=%d,p=%d,numt=%d,b=%d,run=%d,time=%.4f,status=%s}\n",
-                          mult[w], m, n, p, numt, b, run, time2-time1, status ) ;
+                tsum[bi][ti] += time2 - time1 ;
+                printf( "{m=%d,n=%d,p=%d,numt=%d,b=%d,run=%d,time=%.4f,status=%s}\n",
+                          m, n, p, numt, b, run, time2-time1, status ) ;
                 fflush( stdout ) ;
             }
             printf("\n");
@@ -139,30 +137,31 @@ int main( int argc, char **argv )
     }
 
     /* ---- Result tables ---- */
-    double T[NWORK][NTHREADS_MAX+1] ;
-    for( w = 0 ; w < NWORK ; w++ )
-        for( numt = 1 ; numt <= NTHREADS_MAX ; numt++ )
-            T[w][numt] = tsum[w][numt] / nruns ;
+    double T[NBLOCKS][NTHR] ;
+    int best[NTHR] = { 0, 0 } ;
+    for( bi = 0 ; bi < NBLOCKS ; bi++ )
+        for( ti = 0 ; ti < NTHR ; ti++ )
+        {
+            T[bi][ti] = tsum[bi][ti] / nruns ;
+            if ( T[bi][ti] < T[best[ti]][ti] ) best[ti] = bi ;
+        }
 
-    printf( "\n| Avg Exe Time (seconds) | Workload = 1x | Workload = 2x | Workload = 4x |\n" ) ;
-    printf( "| ---------------------- | ------------- | ------------- | ------------- |\n" ) ;
-    for( numt = 1 ; numt <= NTHREADS_MAX ; numt++ )
+    printf( "\nAvg Exe Time (seconds), N=%d, avg of %d runs  (* = fastest block for that thread count)\n", N, nruns ) ;
+    printf( "| Block b | Threads=1       | Threads=4       | Speedup T1/T4 |\n" ) ;
+    printf( "| ------- | --------------- | --------------- | ------------- |\n" ) ;
+    for( bi = 0 ; bi < NBLOCKS ; bi++ )
     {
-        printf( "| Threads=%d              ", numt ) ;
-        for( w = 0 ; w < NWORK ; w++ )
-            printf( "| T%d%d = %-8.3f ", numt, mult[w], T[w][numt] ) ;
-        printf( "|\n" ) ;
+        printf( "| %-7d ", blocks[bi] ) ;
+        for( ti = 0 ; ti < NTHR ; ti++ )
+            printf( "| %-8.3f %-6s ", T[bi][ti], ( best[ti] == bi ) ? "*" : "" ) ;
+        printf( "| %-13.3f |\n", T[bi][0] / T[bi][1] ) ;
     }
 
-    printf( "\n| Speedup   | Workload = 1x | Workload = 2x | Workload = 4x |\n" ) ;
-    printf( "| --------- | ------------- | ------------- | ------------- |\n" ) ;
-    for( numt = 1 ; numt <= NTHREADS_MAX ; numt++ )
-    {
-        printf( "| Threads=%d ", numt ) ;
-        for( w = 0 ; w < NWORK ; w++ )
-            printf( "| T1%d/T%d%d = %-6.3f ", mult[w], numt, mult[w], T[w][1] / T[w][numt] ) ;
-        printf( "|\n" ) ;
-    }
+    printf( "\nTime relative to b=16 (value < 1.00 = faster than b=16)\n" ) ;
+    printf( "| Block b | Threads=1 | Threads=4 |\n" ) ;
+    printf( "| ------- | --------- | --------- |\n" ) ;
+    for( bi = 0 ; bi < NBLOCKS ; bi++ )
+        printf( "| %-7d | %-9.3f | %-9.3f |\n", blocks[bi], T[bi][0] / T[2][0], T[bi][1] / T[2][1] ) ;
 
     printf( "\nValidation: %s\n", failed ? "SOME RUNS FAILED" : "all runs Passed" ) ;
     return 0;
