@@ -1,9 +1,9 @@
-CC=gcc # compiler
-TARGET=main.exe # target file name
+CC=gcc
+TARGET=main.exe
+CFLAGS = -O2 -Wall -fopenmp
 
-CFLAGS = -Wall -fopenmp # set the flags (options) to be used with the default compiler
-all:	main.o MatMul_omp.o
+all:
 	$(CC) $(CFLAGS) main.c MatMul_omp.c -o $(TARGET)
 
 clean:
-	rm *.o $(TARGET)
+	rm -f *.o $(TARGET)
