@@ -23,7 +23,7 @@
 #define NTHREADS_MAX 4
 #define NWORK        3
 #define BLOCK        16            /* block size b (same as original, numt < 4) */
-#define N1X_DEFAULT  1600
+#define N1X_DEFAULT  2000
 #define NRUNS_DEFAULT 10
 
 //MatMul( m, n, p, b, alpha, beta, A, B, C ) is the function that solves computes the matrix C.
